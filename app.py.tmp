@@ -1,0 +1,316 @@
+"""光学波包全实验模拟器 - 交互式光学实验台
+基于 Streamlit，支持实时调参、即时可视化。
+"""
+
+import sys
+sys.path.insert(0, ".")
+
+import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+import tempfile, os
+from io import BytesIO
+import matplotlib.animation as animation
+from scipy.fft import fft, fftshift
+
+from src.core import time_grid, freq_grid
+from src.sources import gaussian_pulse, sech_pulse, super_gaussian
+from src.propagators import ssfm_propagate, ssfm_propagate_dispersion_only
+from src.io import check_code, get_sponsor_status
+from src.sources.beam import gaussian_beam, hermite_gaussian_beam, laguerre_gaussian_beam
+from src.propagators.bpm import beam_propagate
+from src.media.atmosphere import kolmogorov_phase_screen, apply_phase
+from src.nonlinear.polarization import jones_vector, linear_polarization, circular_polarization, birefringent_propagate, stokes_parameters
+
+st.set_page_config(page_title="光学波包全实验模拟器", page_icon="", layout="wide")
+
+st.markdown("<div style='position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27300%27 height=%27300%27%3E%3Ctext x=%27150%27 y=%27120%27 font-size=%2720%27 fill=%27%23999%27 fill-opacity=%270.15%27 transform=%27rotate(-30,150,150)%27 text-anchor=%27middle%27 font-family=%27Arial%27%3Eifdian.net/a/S_Physics%3C/text%3E%3Ctext x=%27150%27 y=%27180%27 font-size=%2714%27 fill=%27%23999%27 fill-opacity=%270.15%27 transform=%27rotate(-30,150,150)%27 text-anchor=%27middle%27 font-family=%27Arial%27%3Egithub.com/RuilinShen%3C/text%3E%3C/svg%3E\");background-repeat:repeat;'></div>", unsafe_allow_html=True)
+st.title("光学波包全实验模拟器")
+st.markdown(r"交互式仿真平台 —— 调节参数，即时观察脉冲在光纤中的传播与演化。")
+
+# ── 侧边栏 ────────────────────────────────────────────
+st.sidebar.header("实验设置")
+st.markdown(r"<style>img{-webkit-user-drag:none;-khtml-user-drag:none;-moz-user-drag:none;-o-user-drag:none;user-drag:none;user-select:none;-webkit-user-select:none;pointer-events:none;-webkit-touch-callout:none;}</style>", unsafe_allow_html=True)
+experiment = st.sidebar.selectbox("选择实验场景", [
+    "高斯脉冲 GVD 展宽",
+    "啁啾脉冲压缩",
+    "超高斯脉冲展宽",
+    "三阶色散 (TOD)",
+    "基态孤子 (N=1)",
+    "空间光束衍射",
+    "HG/LG 模式",
+    "高阶孤子 (N>1)",
+    "大气湍流",
+    "偏振演化",
+    "XPM (交叉相位调制)",
+], index=0)
+L2_EXPS = ("空间光束衍射", "HG/LG 模式", "大气湍流", "偏振演化", "XPM (交叉相位调制)")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("物理参数")
+
+T0 = st.sidebar.slider("脉冲宽度 T0 (ps)", 0.2, 5.0, 1.0, 0.1)
+beta2 = st.sidebar.slider("GVD beta2 (ps2/km)", -40.0, 40.0, -20.0, 1.0)
+length = st.sidebar.slider("传播距离 (km)", 1.0, 30.0, 5.0, 0.5)
+beta3 = 0.0
+C = 0.0
+m = 3
+gamma = 0.0
+N_order = 1
+use_nonlinear = False
+
+if experiment == "啁啾脉冲压缩":
+    C = st.sidebar.slider("啁啾参数 C", -5.0, 5.0, 2.0, 0.1)
+
+if experiment == "超高斯脉冲展宽":
+    m = st.sidebar.slider("超高斯阶数 m", 1, 5, 3, 1)
+
+if experiment == "三阶色散 (TOD)":
+    beta3 = st.sidebar.slider("TOD beta3", -1.0, 1.0, 0.5, 0.05)
+
+if experiment in ("基态孤子 (N=1)", "高阶孤子 (N>1)"):
+    gamma = st.sidebar.slider("非线性系数 gamma", 0.5, 5.0, 2.0, 0.1)
+    if experiment == "高阶孤子 (N>1)":
+        N_order = st.sidebar.slider("孤子阶数 N", 2, 4, 2, 1)
+    P0_calc = N_order**2 * abs(beta2) / (gamma * T0**2)
+    st.sidebar.markdown(f"  N={N_order} 所需峰值功率: **{P0_calc:.1f} W**")
+    use_nonlinear = True
+
+st.sidebar.markdown("---")
+if experiment in ("空间光束衍射","HG/LG 模式","大气湍流"):
+    wvl = st.sidebar.slider("波长 (nm)", 400, 800, 633, 10) * 1e-9
+    w0 = st.sidebar.slider("束腰 (mm)", 0.1, 2.0, 0.5, 0.1) * 1e-3
+    if experiment == "大气湍流":
+        r0 = st.sidebar.slider("Fried r0 (m)", 0.05, 0.5, 0.2, 0.05)
+    else:
+        r0 = 0.2
+n_points = st.sidebar.selectbox("采样点数", [2**10, 2**11, 2**12, 2**13], index=2)
+
+# ── 赞助解锁 ───────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 赞助解锁导出")
+if "sponsor_checked" not in st.session_state:
+    st.session_state.sponsor_checked = False
+    st.session_state.sponsor_valid = False
+    st.session_state.sponsor_msg = ""
+code_input = st.sidebar.text_input("输入赞助码", placeholder="SPONSOR-XXXX", label_visibility="collapsed")
+if st.sidebar.button("验证赞助码", use_container_width=True):
+    valid, msg = get_sponsor_status(code_input)
+    st.session_state.sponsor_checked = True
+    st.session_state.sponsor_valid = valid
+    st.session_state.sponsor_msg = msg
+if st.session_state.sponsor_valid:
+    st.sidebar.success(st.session_state.sponsor_msg)
+elif st.session_state.sponsor_checked:
+    st.sidebar.error(st.session_state.sponsor_msg)
+st.sidebar.markdown("赞助后可获得导出权限")
+st.sidebar.markdown("[去爱发电赞助](https://ifdian.net/a/S_Physics)")
+
+# ── 仿真函数 ──────────────────────────────────────
+@st.cache_data
+def run_simulation(experiment, T0, beta2, beta3, length, gamma, C, m, use_nonlinear, n_points, N_order):
+    """运行 SSFM 模拟并返回结果。"""
+    Tmax = 5 * T0 + 10
+    NT = n_points
+    dz = 0.01
+    t, dt = time_grid(NT, Tmax)
+    w, _ = freq_grid(NT, dt)
+    if experiment == "超高斯脉冲展宽":
+        A0 = super_gaussian(t, T0, m)
+    else:
+        A0 = gaussian_pulse(t, T0, C)
+    if use_nonlinear:
+        P0 = N_order**2 * abs(beta2) / (gamma * T0**2) if gamma > 0 else 1.0
+        A0 = A0 * np.sqrt(P0)
+        result = ssfm_propagate(A0, t, w, beta2, gamma, length, dz, beta3)
+    else:
+        result = ssfm_propagate_dispersion_only(A0, t, w, beta2, length, dz, beta3)
+    result["t"] = t
+    result["w"] = w
+    result["A0"] = A0
+    return result
+
+data = run_simulation(experiment, T0, beta2, beta3, length, gamma, C, m, use_nonlinear, n_points, N_order)
+
+# ── L1 脉冲显示 ──────────────────────────────────────
+if experiment not in L2_EXPS:
+    # ── 显示 ──────────────────────────────────────────────
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+    init_peak = np.abs(data["A0"]).max() ** 2
+    st.metric("初始峰值功率", f"{init_peak:.2f} W")
+    with col2:
+    final_peak = data["pulse"][-1].max()
+    ratio = final_peak / data["pulse"][0].max() if data["pulse"][0].max() > 0 else 0
+    st.metric("峰值变化", f"{ratio:.2f}x")
+    with col3:
+    z_total = data["z"][-1]
+    st.metric("传播距离", f"{z_total:.1f} km")
+    with col4:
+    nz = len(data["z"])
+    st.metric("采样帧数", str(nz))
+    t = data["t"]; w = data["w"]; z = data["z"]
+    pulse = data["pulse"]; spectrum = data["spectrum"]
+    f = fftshift(w) / (2 * np.pi)
+
+    # ── 图 ───────────────────────────────────────────────
+    st.subheader("诊断图")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    st.info("四子图说明 │ 上左=时域波形(蓝输入/红输出) │ 上右=频谱(蓝输入/红输出) │ 下排=脉冲/频谱演化彩图")
+    ax1 = axes[0, 0]
+    ax1.plot(t, pulse[0] / pulse[0].max(), "b-", lw=1.5, label="z = 0")
+    ax1.plot(t, pulse[-1] / pulse[-1].max(), "r--", lw=1.5, label=f"z = {z[-1]:.1f} km")
+    ax1.set_xlabel("Time (ps)"); ax1.set_ylabel("Intensity")
+    ax1.set_title("Temporal Profile"); ax1.legend(); ax1.grid(alpha=0.3)
+    ax2 = axes[0, 1]
+    ax2.plot(f, spectrum[0] / spectrum[0].max(), "b-", lw=1.5, label="z = 0")
+    ax2.plot(f, spectrum[-1] / spectrum[-1].max(), "r--", lw=1.5, label=f"z = {z[-1]:.1f} km")
+    ax2.set_xlabel("Frequency (THz)"); ax2.set_ylabel("Spectrum")
+    ax2.set_title("Spectrum"); ax2.legend(); ax2.grid(alpha=0.3)
+    ax3 = axes[1, 0]
+    extent = [t[0], t[-1], z[0], z[-1]]
+    im = ax3.imshow(pulse, aspect="auto", origin="lower", extent=extent, cmap="inferno")
+    ax3.set_xlabel("Time (ps)"); ax3.set_ylabel("Distance (km)")
+    ax3.set_title("Pulse Evolution")
+    plt.colorbar(im, ax=ax3, label="Intensity")
+    ax4 = axes[1, 1]
+    extent_f = [f[0], f[-1], z[0], z[-1]]
+    im2 = ax4.imshow(spectrum, aspect="auto", origin="lower", extent=extent_f, cmap="inferno")
+    ax4.set_xlabel("Frequency (THz)"); ax4.set_ylabel("Distance (km)")
+    ax4.set_title("Spectrum Evolution")
+    plt.colorbar(im2, ax=ax4, label="Intensity")
+    plt.tight_layout()
+    st.pyplot(fig)
+else:
+    t = np.linspace(-10, 10, 256)
+    z = np.array([0, 1])
+    pulse = np.zeros((2, 256))
+    fig = None
+
+# ── L2 可视化 ──────────────────────────────────────
+if experiment in ("空间光束衍射","HG/LG 模式","大气湍流","偏振演化","XPM (交叉相位调制)"):
+    st.subheader("实验结果")
+    x = np.linspace(-3e-3, 3e-3, 256)
+    X, Y = np.meshgrid(x, x)
+    if experiment == "空间光束衍射":
+        E0 = gaussian_beam(X, Y, w0)
+        res = beam_propagate(E0, X, Y, wvl, 2.0, 30)
+        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+        for idx in range(4):
+            zi = idx * 7
+            I = np.abs(res["fields"][zi])**2
+            axes[idx].imshow(I, extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3], cmap="inferno")
+            axes[idx].set_title(f"z={res[chr(122)][zi]*1e3:.0f}mm")
+            axes[idx].axis("off")
+        st.pyplot(fig)
+        st.markdown("强泵普通过克尔效应调制弱探针的相位，导致频谱不对称展宽。XPM系数是SPM的两倍。参见L1脉冲实验中的频谱分析。")
+    elif experiment == "HG/LG 模式":
+        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+        modes=[("Gaussian",gaussian_beam(X,Y,w0)),("HG10",hermite_gaussian_beam(X,Y,w0,1,0)),("HG11",hermite_gaussian_beam(X,Y,w0,1,1)),("LG01",laguerre_gaussian_beam(X,Y,w0,0,1)),("LG02",laguerre_gaussian_beam(X,Y,w0,0,2)),("LG11",laguerre_gaussian_beam(X,Y,w0,1,1))]
+        for i,(nm,E) in enumerate(modes):
+            r,c=divmod(i,3)
+            axes[r,c].imshow(np.abs(E)**2,extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3],cmap="inferno")
+            axes[r,c].set_title(nm); axes[r,c].axis("off")
+        st.pyplot(fig)
+        st.markdown("HG和LG模式是光场的完备正交基。HGmn有m×n个节线，LGpl含涡旋相位。上图展示各模式的强度分布。")
+    elif experiment == "大气湍流":
+        dx = x[1]-x[0]
+        phase = kolmogorov_phase_screen(256, dx, r0)
+        E0 = gaussian_beam(X, Y, w0)
+        E = apply_phase(E0, phase)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        axes[0].imshow(phase, cmap="RdBu", extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3])
+        axes[0].set_title("Kolmogorov Phase Screen")
+        axes[1].imshow(np.abs(E)**2, extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3], cmap="inferno")
+        axes[1].set_title("Beam After Turbulence")
+        st.pyplot(fig)
+        st.markdown("HG和LG模式是光场的完备正交基。HGmn有m×n个节线，LGpl含涡旋相位。上图展示各模式的强度分布。")
+    elif experiment == "偏振演化":
+        from src.nonlinear.polarization import jones_vector, stokes_parameters
+        J0 = jones_vector(0, 0)
+        J1 = jones_vector(0, np.pi/4)
+        S0 = stokes_parameters(J0); S1 = stokes_parameters(J1)
+        fig, ax = plt.subplots(figsize=(8, 4))
+        x_pos = [0, 1, 2]
+        ax.bar([p-0.2 for p in x_pos], [S0[1]/S0[0],S0[2]/S0[0],S0[3]/S0[0]], width=0.35, label="H-Linear")
+        ax.bar([p+0.2 for p in x_pos], [S1[1]/S1[0],S1[2]/S1[0],S1[3]/S1[0]], width=0.35, label="R-Circular")
+        ax.set_xticks(x_pos); ax.set_xticklabels(["S1","S2","S3"])
+        ax.set_ylim(-1.1, 1.1); ax.axhline(0, color="gray")
+        ax.legend(); ax.set_title("Stokes Parameters")
+        st.pyplot(fig)
+        st.markdown("Stokes参数S1S2S3描述偏振态。H线偏→(1,0,0)；R圆偏→(0,0,1)。双折射使偏振态演化。")
+    elif experiment == "XPM (交叉相位调制)":
+        st.markdown("参见 L1 脉冲传播实验中的频谱分析。")
+
+# ── 导出 ──────────────────────────────────────────
+st.markdown(r"---")
+st.subheader("导出图片 / GIF")
+if st.session_state.sponsor_valid:
+    gif_fps = st.selectbox("GIF fps", [2, 4, 6, 12], index=2)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("导出 PNG 图片", use_container_width=True):
+            buf_png = BytesIO()
+            fig.savefig(buf_png, format="png", dpi=150, bbox_inches="tight")
+            st.download_button("点击下载 PNG", data=buf_png.getvalue(), file_name="diagnostic_plot.png", mime="image/png", use_container_width=True)
+    with col_b:
+        if st.button("导出 GIF 动画", use_container_width=True):
+            fig_anim, ax_anim = plt.subplots(figsize=(8, 5))
+            n_frames = len(z)
+            def update(frame):
+                ax_anim.clear()
+                ax_anim.plot(t, pulse[frame]/pulse[frame].max(), "r-", lw=2)
+                ax_anim.set_xlabel("Time (ps)"); ax_anim.set_ylabel("Intensity")
+                ax_anim.set_title(f"z={z[frame]:.1f} km")
+                ax_anim.set_ylim(0, 1.1); ax_anim.grid(alpha=0.3)
+            ani = animation.FuncAnimation(fig_anim, update, frames=n_frames, interval=80)
+            fd2, gif_path2 = tempfile.mkstemp(suffix=".gif")
+            os.close(fd2)
+            ani.save(gif_path2, writer="pillow", fps=gif_fps)
+            plt.close(fig_anim)
+            with open(gif_path2, "rb") as g:
+                gif_data = g.read()
+            os.unlink(gif_path2)
+            st.download_button("点击下载 GIF", data=gif_data, file_name="pulse_evolution.gif", mime="image/gif", use_container_width=True)
+    st.markdown(r"---")
+    st.markdown(r"感谢您的赞助支持！")
+else:
+    st.info("赞助后可解锁 PNG/GIF 导出功能")
+    st.markdown(r"[去爱发电赞助](https://ifdian.net/a/S_Physics)")
+
+# ── 物理说明 ────────────────────────────────────
+st.subheader("物理说明")
+if experiment == "高斯脉冲 GVD 展宽":
+    st.markdown(r"高斯脉冲在色散光纤中传播，不同频率分量以不同速度传播导致脉冲展宽。")
+    st.latex(r"\frac{\partial A}{\partial z} = -i\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2}")
+    st.markdown(r"$L_D=T_0^2/|\beta_2|$ 为色散长度。$T(z)=T_0\sqrt{1+(z/L_D)^2}$。")
+elif experiment == "啁啾脉冲压缩":
+    st.markdown(r"带正啁啾的脉冲在反常色散光纤中先压缩后展宽。")
+    st.latex(r"z_{\min} = \frac{|C|}{1+C^2}L_D, \quad T_{\min} = \frac{T_0}{\sqrt{1+C^2}}")
+    st.markdown(r"压缩条件：$C\beta_2<0$（正啁啾 + 反常色散）。")
+elif experiment == "超高斯脉冲展宽":
+    st.markdown(r"$A(0,T)=\exp(-\frac12|T/T_0|^{2m})$ $m=1$为标准高斯，$m=3$为近矩形脉冲。")
+    st.markdown(r"超高斯脉冲边缘陡峭→频域分量更丰富，GVD 导致边缘产生振荡结构。")
+elif experiment == "三阶色散 (TOD)":
+    st.markdown(r"三阶色散 ($\beta_3$) 导致脉冲非对称畸变，$\phi(\omega)=\beta_2\omega^2/2+\beta_3\omega^3/6$。")
+    st.markdown(r"$\beta_3>0$在前沿产生振荡，$\beta_3<0$在后沿，超短脉冲中不可忽略。")
+elif experiment == "基态孤子 (N=1)":
+    st.markdown(r"反常色散 + SPM 精确平衡，形成稳定孤子。")
+    st.latex(r"i\frac{\partial A}{\partial z} = -\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2} + \gamma |A|^2 A")
+    st.markdown(r"$N^2=\gamma P_0 T_0^2/|\beta_2|=1$ → $P_0=|\beta_2|/(\gamma T_0^2)$。")
+elif experiment == "高阶孤子 (N>1)":
+    st.markdown(r"N>1 时孤子呈现周期性呼吸行为：压缩→分裂→恢复，周期 $z_0=\pi L_D/2$。")
+    st.markdown(r"N 越大呼吸越剧烈。参数滑块可调 N=2~4。")
+elif experiment == "空间光束衍射":
+    st.markdown("高斯光束在自由空间中传播时因衍射而展宽。角谱法通过频域相位因子模拟衍射。")
+elif experiment == "HG/LG 模式":
+    st.markdown("厄米-高斯和拉盖尔-高斯模式是空间光场的完备正交基。HG由Hermite正交多项式，LG含涡旋相位。")
+elif experiment == "大气湍流":
+    st.markdown("Kolmogorov 相位屏模拟大气湍流。光束通过多个相位屏后产生闪烁和波前失真。")
+elif experiment == "偏振演化":
+    st.markdown("偏振态可用 Jones 向量表征。双折射介质中，两偏振分量经历不同相位延迟。Stokes参数 S1/S2/S3 描述偏振态。输入与输出偏振态的 Stokes 参数对比可观察双折射效应。")
+elif experiment == "XPM (交叉相位调制)":
+    st.markdown("两脉冲共传时，一者的非线性相位受另一者影响（XPM）。搭配强泵普和弱探针可观察探针频谱的不对称展宽。参见 L1 脉冲传播实验中的频谱分析。")
+
+st.markdown(r"---")
+st.caption("光学波包全实验模拟器 | L1 基础层 | 引擎：对称分步傅里叶法 (SSFM)")

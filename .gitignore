@@ -1,0 +1,14 @@
+﻿# 赞助验证系统
+server/licenses.db
+server/__pycache__/
+sponsor_codes.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.license_cache
+server/licenses.db
+server/__pycache__/
+
