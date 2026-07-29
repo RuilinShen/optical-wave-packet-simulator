@@ -1,14 +1,18 @@
-﻿# 赞助验证系统
+# 验证系统
 server/licenses.db
 server/__pycache__/
 sponsor_codes.json
 
-# Python 缓存
+# Python 中间
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 .license_cache
-server/licenses.db
-server/__pycache__/
 
+# 验证服务器配置（部署时使用）
+.env
+*.local.py
+
+# 废弃文件
+_archive/

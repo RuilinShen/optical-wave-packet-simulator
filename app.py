@@ -1,5 +1,22 @@
-"""光学波包全实验模拟器 - 交互式光学实验台
+"""
+光学波包全实验模拟器 - 交互式光学实验台
 基于 Streamlit，支持实时调参、即时可视化。
+
+文件结构（按执行顺序）：
+  1. 导入+配置   (行 5-28) : 库导入、水印、页面配置
+  2. 侧边栏      (行 32-130): 实验选择 + 各层级参数滑块
+  3. 赞助验证    (行 135-150): 赞助码输入与验证
+  4. 仿真引擎    (行 155-175): SSFM 模拟函数（L1 用）
+  5. L1 脉冲显示 (行 180-250): 6个脉冲实验的诊断图 + GIF
+  6. L2 可视化   (行 255-380): 5个空间光学/非线性实验
+  7. L3 可视化   (行 385-450): 4个光子系统层实验
+  8. 导出        (行 455-490): PNG / GIF 导出
+  9. 物理说明    (行 495-540): 各实验的物理公式和推导
+
+层级：
+  L1 基础层 - 6 个脉冲传播实验（免费试用）
+  L2 进阶层 - 5 个空间光学与非线性实验（赞助解锁）
+  L3 系统层 - 4 个光子系统实验（赞助解锁）
 """
 
 import sys
@@ -8,6 +25,9 @@ sys.path.insert(0, ".")
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 import tempfile, os
 from io import BytesIO
 import matplotlib.animation as animation
@@ -16,7 +36,7 @@ from scipy.fft import fft, fftshift
 from src.core import time_grid, freq_grid
 from src.sources import gaussian_pulse, sech_pulse, super_gaussian
 from src.propagators import ssfm_propagate, ssfm_propagate_dispersion_only
-from src.io import check_code, get_sponsor_status, get_license_state
+from src.io.sponsor import check_code, get_sponsor_status, get_license_state
 from src.sources.beam import gaussian_beam, hermite_gaussian_beam, laguerre_gaussian_beam
 from src.propagators.bpm import beam_propagate
 from src.media.atmosphere import kolmogorov_phase_screen, apply_phase
@@ -29,7 +49,9 @@ st.markdown("<div style='position:fixed;top:0;left:0;width:100%;height:100%;z-in
 st.title("光学波包全实验模拟器")
 st.markdown(r"交互式仿真平台 —— 调节参数，即时观察脉冲在光纤中的传播与演化。")
 
-# ── 侧边栏 ────────────────────────────────────────────
+# ── 侧边栏 ────────────────────────────────────────
+# 实验选择器 + 各层级参数滑块
+# L1 参数总是显示，L2/L3 参数只在对应实验选中时出现────────────────
 st.sidebar.header("实验设置")
 st.markdown(r"<style>img{-webkit-user-drag:none;-khtml-user-drag:none;-moz-user-drag:none;-o-user-drag:none;user-drag:none;user-select:none;-webkit-user-select:none;pointer-events:none;-webkit-touch-callout:none;}</style>", unsafe_allow_html=True)
 experiment = st.sidebar.selectbox("选择实验场景", [
@@ -129,7 +151,7 @@ if experiment == "锁模激光器":
     ml_g0 = st.sidebar.slider("小信号增益 g0 (/km)", 100, 1000, 600, 50)
     ml_q0 = st.sidebar.slider("可饱和吸收 q0", 0.1, 0.8, 0.3, 0.05)
     ml_R = st.sidebar.slider("输出耦合 R", 0.5, 0.99, 0.9, 0.05)
-    ml_nRT = st.sidebar.slider("往返次数", 100, 500, 300, 50)
+    ml_nRT = st.sidebar.slider("往返次数", 100, 500, 200, 50)
 
 if experiment == "光频梳":
     comb_alpha = st.sidebar.slider("失谐 alpha", 0.0, 6.0, 3.0, 0.5)
@@ -137,9 +159,13 @@ if experiment == "光频梳":
     comb_pump = st.sidebar.slider("泵浦振幅 f", 1.0, 5.0, 3.5, 0.1)
 n_points = st.sidebar.selectbox("采样点数", [2**10, 2**11, 2**12, 2**13], index=2)
 
-# ── 赞助解锁 ───────────────────────────────────────
+# ── 赞助验证 ──────────────────────────────────────
+# 赞助码输入与验证。验证通过后缓存到本地文件。
+# 试用模式仅 L1 可用，赞助后解锁 L2+L3────────────────
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 赞助解锁导出")
+st.sidebar.caption("项目：光学波包全实验模拟器 | Optical Wave Packet Simulator")
+st.sidebar.caption("🔵 赞助码请确认属于光学项目")
 if "sponsor_checked" not in st.session_state:
     st.session_state.sponsor_checked = False
     st.session_state.sponsor_valid = False
@@ -162,13 +188,37 @@ if license_state.get("tier") == "trial":
     st.sidebar.warning(chr(128274) + " 试用模式 — 仅限 L1 基础实验")
 else:
     exp = license_state.get("expires_at", "")
-    msg = f"有效期至 {exp[:10]}" if exp else "永久有效"
+    if exp:
+        try:
+            from datetime import datetime
+            rem = (datetime.fromisoformat(exp) - datetime.now()).days + 1
+            msg = f"剩余 {rem} 天" if rem > 0 else "已过期"
+        except:
+            msg = f"有效期至 {exp[:10]}"
+    else:
+        msg = "永久有效"
     st.sidebar.success(chr(9989) + f" 已赞助（{msg}）")
 
 # ── 仿真函数 ──────────────────────────────────────
 @st.cache_data
 def run_simulation(experiment, T0, beta2, beta3, length, gamma, C, m, use_nonlinear, n_points, N_order):
-    """运行 SSFM 模拟并返回结果。"""
+    """用分步傅里叶法 (SSFM) 运行 L1 脉冲传播模拟。
+
+    参数：
+        experiment : str — 实验名称
+        T0 : float   — 脉冲宽度 [ps]
+        beta2 : float — 群速度色散 [ps^2/km]
+        beta3 : float — 三阶色散 [ps^3/km]
+        gamma : float — 非线性系数 [1/(W*km)]
+        C : float    — 啁啾参数
+        m : int      — 超高斯阶数
+        use_nonlinear : bool — 是否启用非线性项
+        n_points : int — 采样点数
+        N_order : int — 孤子阶数
+
+    返回：
+        dict — 含 pulse, spectrum, z, t, w, A0
+    """
     Tmax = 5 * T0 + 10
     NT = n_points
     dz = 0.01
@@ -191,7 +241,25 @@ def run_simulation(experiment, T0, beta2, beta3, length, gamma, C, m, use_nonlin
 
 data = run_simulation(experiment, T0, beta2, beta3, length, gamma, C, m, use_nonlinear, n_points, N_order)
 
-# ── L1 脉冲显示 ──────────────────────────────────────
+# ── L2/L3 缓存包装 ─────────────────────
+@st.cache_data
+def _ml_cached(g0, q0, R, nRT, beta2, ga, np_):
+    from src.core import time_grid, freq_grid
+    from src.media.laser_cavity import mode_lock_sim
+    t_, dt_ = time_grid(np_, 30.0)
+    w_, _ = freq_grid(np_, dt_)
+    params_ = {"g0": g0, "Esat": 10.0, "q0": q0, "Esat_a": 1.0,
+               "R": R, "beta2": beta2, "gamma": ga, "L_cav": 0.001, "loss": 0}
+    return mode_lock_sim(t_, w_, params_, nRT)
+
+@st.cache_data
+def _comb_cached(alpha, beta2, pump, np_):
+    from src.media.kerr_comb import solve_lle
+    return solve_lle(alpha=alpha, beta2=beta2, pump=pump, n_pts=np_, n_steps=4000, dt=0.02)
+
+# ── L1 脉冲显示 ──────────────────────────────────
+# 6 个脉冲传播实验的诊断图 + 传播动画
+# 仅在选中 L1 实验时显示（experiment not in NON_L1_EXPS）─────────────────
 if experiment not in NON_L1_EXPS:
     # ── 显示 ──────────────────────────────────────────────
     col1, col2, col3, col4 = st.columns(4)
@@ -219,25 +287,25 @@ if experiment not in NON_L1_EXPS:
     ax1 = axes[0, 0]
     ax1.plot(t, pulse[0] / pulse[0].max(), "b-", lw=1.5, label="z = 0")
     ax1.plot(t, pulse[-1] / pulse[-1].max(), "r--", lw=1.5, label=f"z = {z[-1]:.1f} km")
-    ax1.set_xlabel("Time (ps)"); ax1.set_ylabel("Intensity")
-    ax1.set_title("Temporal Profile"); ax1.legend(); ax1.grid(alpha=0.3)
+    ax1.set_xlabel("Time (ps)"); ax1.set_ylabel("强度")
+    ax1.set_title("时域波形"); ax1.legend(); ax1.grid(alpha=0.3)
     ax2 = axes[0, 1]
     ax2.plot(f, spectrum[0] / spectrum[0].max(), "b-", lw=1.5, label="z = 0")
     ax2.plot(f, spectrum[-1] / spectrum[-1].max(), "r--", lw=1.5, label=f"z = {z[-1]:.1f} km")
-    ax2.set_xlabel("Frequency (THz)"); ax2.set_ylabel("Spectrum")
+    ax2.set_xlabel("频率 (THz)"); ax2.set_ylabel("Spectrum")
     ax2.set_title("Spectrum"); ax2.legend(); ax2.grid(alpha=0.3)
     ax3 = axes[1, 0]
     extent = [t[0], t[-1], z[0], z[-1]]
     im = ax3.imshow(pulse, aspect="auto", origin="lower", extent=extent, cmap="inferno")
-    ax3.set_xlabel("Time (ps)"); ax3.set_ylabel("Distance (km)")
-    ax3.set_title("Pulse Evolution")
-    plt.colorbar(im, ax=ax3, label="Intensity")
+    ax3.set_xlabel("Time (ps)"); ax3.set_ylabel("传播距离 (km)")
+    ax3.set_title("脉冲演化")
+    plt.colorbar(im, ax=ax3, label="强度")
     ax4 = axes[1, 1]
     extent_f = [f[0], f[-1], z[0], z[-1]]
     im2 = ax4.imshow(spectrum, aspect="auto", origin="lower", extent=extent_f, cmap="inferno")
-    ax4.set_xlabel("Frequency (THz)"); ax4.set_ylabel("Distance (km)")
-    ax4.set_title("Spectrum Evolution")
-    plt.colorbar(im2, ax=ax4, label="Intensity")
+    ax4.set_xlabel("频率 (THz)"); ax4.set_ylabel("传播距离 (km)")
+    ax4.set_title("频谱演化")
+    plt.colorbar(im2, ax=ax4, label="强度")
     plt.tight_layout()
     st.pyplot(fig)
 
@@ -250,7 +318,7 @@ if experiment not in NON_L1_EXPS:
         def upd(frame):
             ax_gif.clear()
             ax_gif.plot(t, pulse[frame]/pulse[frame].max(), "r-", lw=2)
-            ax_gif.set_xlabel("Time (ps)"); ax_gif.set_ylabel("Intensity")
+            ax_gif.set_xlabel("Time (ps)"); ax_gif.set_ylabel("强度")
             ax_gif.set_title(f"Pulse at z={z[frame]:.1f} km")
             ax_gif.set_ylim(0, 1.1); ax_gif.grid(alpha=0.3)
         ani = animation.FuncAnimation(fig_gif, upd, frames=frame_idx, interval=80)
@@ -276,7 +344,9 @@ if experiment in LICENSED_EXPS and license_state.get("tier") == "trial":
     st.markdown("[去爱发电赞助](https://ifdian.net/a/S_Physics)")
     st.stop()
 
-# ── L2 可视化 ──────────────────────────────────────
+# ── L2 可视化 ────────────────────────────────────
+# 5 个进阶层实验：空间光束衍射、HG/LG 模式、大气湍流、偏振演化、XPM
+# 每个实验有独立的参数滑块和可视化逻辑───────────────
 if experiment in L2_EXPS:
     st.subheader("实验结果")
     x = np.linspace(-3e-3, 3e-3, 256)
@@ -311,7 +381,7 @@ if experiment in L2_EXPS:
             os.unlink(beam_gif)
             st.caption("光束传播动画（角谱法）")
         except Exception as e:
-            st.error(f"Beam GIF: {e}")
+            st.error(f"光束传播: {e}")
         st.markdown("高斯光束在自由空间中传播时因衍射而展宽。上图展示不同传播距离z处的光束截面强度分布。束腰w0越小衍射越显著，发散角theta = lambda/(pi w0)。角谱法核心：A(kx,ky,z)=A(kx,ky,0)*exp(-i(kx^2+ky^2)z/(2k))。")
     elif experiment == "HG/LG 模式":
         if hg_type == "HG (厄米-高斯)":
@@ -323,10 +393,10 @@ if experiment in L2_EXPS:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         ext_mm = [x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3]
         im0 = axes[0].imshow(np.abs(E)**2, extent=ext_mm, cmap="inferno")
-        axes[0].set_title("Intensity"); axes[0].axis("off")
+        axes[0].set_title("强度"); axes[0].axis("off")
         plt.colorbar(im0, ax=axes[0])
         im1 = axes[1].imshow(np.angle(E), extent=ext_mm, cmap="twilight", vmin=-3.14, vmax=3.14)
-        axes[1].set_title("Phase (wrapped)"); axes[1].axis("off")
+        axes[1].set_title("相位"); axes[1].axis("off")
         plt.colorbar(im1, ax=axes[1], ticks=[-3.14, 0, 3.14])
         plt.suptitle(ttl, fontsize=14)
         plt.tight_layout()
@@ -346,7 +416,7 @@ if experiment in L2_EXPS:
         axes[0].imshow(phase, cmap="RdBu", extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3])
         axes[0].set_title("Kolmogorov Phase Screen")
         axes[1].imshow(np.abs(E)**2, extent=[x[0]*1e3, x[-1]*1e3, x[0]*1e3, x[-1]*1e3], cmap="inferno")
-        axes[1].set_title("Beam After Turbulence")
+        axes[1].set_title("湍流后光束")
         st.pyplot(fig)
         st.markdown("Kolmogorov相位屏模拟大气湍流对光束的扰动。上图左为相位屏分布，右为经过湍流后的光束强度分布。湍流导致光束扩展和光强闪烁，Fried参数r0越小湍流越强。")
     elif experiment == "偏振演化":
@@ -361,11 +431,11 @@ if experiment in L2_EXPS:
         axes[0].bar(x_pos, [S_in[1]/S_in[0], S_in[2]/S_in[0], S_in[3]/S_in[0]], color='steelblue', alpha=0.8)
         axes[0].set_xticks(x_pos); axes[0].set_xticklabels(["S1","S2","S3"])
         axes[0].set_ylim(-1.1, 1.1); axes[0].axhline(0, color="gray")
-        axes[0].set_title("Input Stokes Parameters")
+        axes[0].set_title("输入 Stokes 参数")
         axes[1].bar(x_pos, [S_out[1]/S_out[0], S_out[2]/S_out[0], S_out[3]/S_out[0]], color='coral', alpha=0.8)
         axes[1].set_xticks(x_pos); axes[1].set_xticklabels(["S1","S2","S3"])
         axes[1].set_ylim(-1.1, 1.1); axes[1].axhline(0, color="gray")
-        axes[1].set_title("Output Stokes (After Birefringence)")
+        axes[1].set_title("输出 Stokes（双折射后）")
         plt.tight_layout()
         st.pyplot(fig)
         st.markdown("**实验结果说明**：左侧为输入偏振态的Stokes参数，右侧为经过双折射介质后的输出参数。theta控制偏振角度，phi控制椭圆度。delta_n和晶体长度决定双折射效应。")
@@ -387,27 +457,29 @@ if experiment in L2_EXPS:
         sin_s1 = np.abs(fftshift(fft(A1)))**2; sin_s2 = np.abs(fftshift(fft(A2)))**2
         axes_xpm[0,0].plot(fx, sin_s1/sin_s1.max(), label="Pump", lw=1.5)
         axes_xpm[0,0].plot(fx, sin_s2/sin_s2.max(), label="Probe", lw=1.5)
-        axes_xpm[0,0].set_title("Input Spectra"); axes_xpm[0,0].legend(); axes_xpm[0,0].grid(alpha=0.3)
+        axes_xpm[0,0].set_title("输入频谱"); axes_xpm[0,0].legend(); axes_xpm[0,0].grid(alpha=0.3)
         axes_xpm[0,0].set_xlabel("f (THz)"); axes_xpm[0,0].set_ylabel("Norm. Intensity")
         sout_s1 = np.abs(fftshift(fft(res_xpm["field1"][-1])))**2
         sout_s2 = np.abs(fftshift(fft(res_xpm["field2"][-1])))**2
         axes_xpm[0,1].plot(fx, sout_s1/sout_s1.max(), label="Pump", lw=1.5)
         axes_xpm[0,1].plot(fx, sout_s2/sout_s2.max(), label="Probe", lw=1.5)
-        axes_xpm[0,1].set_title("Output Spectra (XPM broadens probe)"); axes_xpm[0,1].legend()
+        axes_xpm[0,1].set_title("输出频谱 (XPM broadens probe)"); axes_xpm[0,1].legend()
         axes_xpm[0,1].grid(alpha=0.3); axes_xpm[0,1].set_xlabel("f (THz)")
         ext_xpm = [tx[0], tx[-1], res_xpm["z"][0], res_xpm["z"][-1]]
         im1 = axes_xpm[1,0].imshow(np.abs(res_xpm["field1"])**2, aspect="auto", origin="lower", extent=ext_xpm, cmap="inferno")
-        axes_xpm[1,0].set_title("Pump Evolution"); axes_xpm[1,0].set_xlabel("Time (ps)"); axes_xpm[1,0].set_ylabel("z (km)")
+        axes_xpm[1,0].set_title("泵浦演化"); axes_xpm[1,0].set_xlabel("Time (ps)"); axes_xpm[1,0].set_ylabel("z (km)")
         plt.colorbar(im1, ax=axes_xpm[1,0])
         im2 = axes_xpm[1,1].imshow(np.abs(res_xpm["field2"])**2, aspect="auto", origin="lower", extent=ext_xpm, cmap="inferno")
-        axes_xpm[1,1].set_title("Probe Evolution"); axes_xpm[1,1].set_xlabel("Time (ps)"); axes_xpm[1,1].set_ylabel("z (km)")
+        axes_xpm[1,1].set_title("探针演化"); axes_xpm[1,1].set_xlabel("Time (ps)"); axes_xpm[1,1].set_ylabel("z (km)")
         plt.colorbar(im2, ax=axes_xpm[1,1])
         plt.tight_layout()
         fig = fig_xpm
         st.pyplot(fig_xpm)
 
 
-# ── L3 可视化 ──────────────────────────────────────
+# ── L3 可视化 ────────────────────────────────────
+# 4 个系统层实验：定向耦合器、微环谐振腔、锁模激光器、Kerr 光频梳
+# 使用独立的物理模块（waveguide.py, microring.py, laser_cavity.py, kerr_comb.py）───────────────
 if experiment == "定向耦合器":
     from src.media.waveguide import coupling_coefficient, coupled_power, dual_waveguide_profile
     st.subheader("定向耦合器模拟")
@@ -420,17 +492,17 @@ if experiment == "定向耦合器":
     cpl_eff = P2_dc[-1]
     col_c.metric("耦合效率", f"{cpl_eff:.1%}")
     fig_dc, axes_dc = plt.subplots(1, 2, figsize=(14, 5))
-    axes_dc[0].plot(z_dc*1e3, P1_dc, label="Waveguide 1", lw=2)
-    axes_dc[0].plot(z_dc*1e3, P2_dc, label="Waveguide 2", lw=2)
+    axes_dc[0].plot(z_dc*1e3, P1_dc, label="波导 1", lw=2)
+    axes_dc[0].plot(z_dc*1e3, P2_dc, label="波导 2", lw=2)
     if Lc_dc > 0:
         axes_dc[0].axvline(Lc_dc*1e3, color="gray", ls="--", alpha=0.5, label=f"Lc={Lc_dc*1e3:.2f}mm")
     axes_dc[0].set_xlabel("z (mm)"); axes_dc[0].set_ylabel("Power")
-    axes_dc[0].set_title("Power Transfer"); axes_dc[0].legend(); axes_dc[0].grid(alpha=0.3)
+    axes_dc[0].set_title("功率传输"); axes_dc[0].legend(); axes_dc[0].grid(alpha=0.3)
     x_dc = np.linspace(-3e-6, 3e-6, 1000)
     n_dc = dual_waveguide_profile(x_dc, dc_w, dc_gap, dc_ncore, dc_nclad)
     axes_dc[1].plot(x_dc*1e6, n_dc, "b-", lw=2)
     axes_dc[1].set_xlabel("x (um)"); axes_dc[1].set_ylabel("n")
-    axes_dc[1].set_title("Cross-Section"); axes_dc[1].grid(alpha=0.3)
+    axes_dc[1].set_title("折射率截面"); axes_dc[1].grid(alpha=0.3)
     plt.tight_layout()
     st.pyplot(fig_dc)
     fig = fig_dc
@@ -458,7 +530,7 @@ if experiment == "微环谐振腔":
     ax_mr.plot(wvls_mr*1e9, T_mr, "b-", lw=1.5)
     ax_mr.axvline(wvl_res*1e9, color="r", ls="--", alpha=0.5, label=f"res @ {wvl_res*1e9:.2f}nm")
     ax_mr.set_xlabel("Wavelength (nm)"); ax_mr.set_ylabel("Transmission")
-    ax_mr.set_title("Microring Through-Port Transmission")
+    ax_mr.set_title("微环透射谱")
     ax_mr.set_ylim(-0.05, 1.05); ax_mr.legend(); ax_mr.grid(alpha=0.3)
     plt.tight_layout()
     st.pyplot(fig_mr)
@@ -471,17 +543,15 @@ if experiment == "锁模激光器":
     st.subheader("锁模激光器腔模拟")
     t_ml, dt_ml = time_grid(n_points, 30.0)
     w_ml, _ = freq_grid(n_points, dt_ml)
-    p_ml = {"g0": ml_g0, "Esat": 10.0, "q0": ml_q0, "Esat_a": 1.0,
-            "R": ml_R, "beta2": -20.0, "gamma": 2.0, "L_cav": 0.001, "loss": 0}
     with st.spinner("模拟腔多次往返中..."):
-        r_ml = mode_lock_sim(t_ml, w_ml, p_ml, ml_nRT)
+        r_ml = _ml_cached(ml_g0, ml_q0, ml_R, ml_nRT, beta2, gamma, n_points)
     Ef_ml = np.trapezoid(np.abs(r_ml["final_field"])**2, t_ml)
     Pp_ml = np.abs(r_ml["final_field"])**2
     col1, col2, col3 = st.columns(3)
     col1.metric("脉冲能量", f"{Ef_ml:.2f}")
     col2.metric("峰值功率", f"{Pp_ml.max():.2f}")
     fwhm_n = np.sum(Pp_ml > Pp_ml.max()/2)
-    col3.metric("脉宽(采样点)", str(fwhm_n))
+    col3.metric("脉宽", f"{fwhm_n * dt_ml:.3f} ps")
     fig_ml, axes_ml = plt.subplots(1, 3, figsize=(18, 5))
     ext_ml = [t_ml[0], t_ml[-1], 0, len(r_ml["fields"])-1]
     from matplotlib.colors import LogNorm
@@ -489,16 +559,16 @@ if experiment == "锁模激光器":
     vmin_ml = max(evo_data[evo_data > 0].min() if (evo_data > 0).any() else 1e-10, 1e-10)
     im_ml = axes_ml[0].imshow(evo_data, aspect="auto", origin="lower", extent=ext_ml, cmap="inferno", norm=LogNorm(vmin=vmin_ml, vmax=evo_data.max()))
     del evo_data, vmin_ml
-    axes_ml[0].set_title("Pulse Evolution Over Round-Trips")
+    axes_ml[0].set_title("脉冲演化 Over Round-Trips")
     axes_ml[0].set_xlabel("Time (ps)"); axes_ml[0].set_ylabel("Round-Trip")
     plt.colorbar(im_ml, ax=axes_ml[0])
     axes_ml[1].plot(t_ml, np.abs(r_ml["final_field"])**2, "r-", lw=2)
-    axes_ml[1].set_title("Final Pulse"); axes_ml[1].set_xlabel("Time (ps)")
-    axes_ml[1].set_ylabel("Intensity"); axes_ml[1].grid(alpha=0.3)
+    axes_ml[1].set_title("稳态脉冲"); axes_ml[1].set_xlabel("Time (ps)")
+    axes_ml[1].set_ylabel("强度"); axes_ml[1].grid(alpha=0.3)
     f_ml = fftshift(w_ml) / (2*np.pi)
     spec_ml = np.abs(fftshift(fft(r_ml["final_field"])))**2
     axes_ml[2].plot(f_ml, spec_ml / spec_ml.max(), "b-", lw=1.5)
-    axes_ml[2].set_title("Spectrum"); axes_ml[2].set_xlabel("Frequency (THz)")
+    axes_ml[2].set_title("Spectrum"); axes_ml[2].set_xlabel("频率 (THz)")
     axes_ml[2].grid(alpha=0.3)
     plt.tight_layout()
     st.pyplot(fig_ml)
@@ -508,7 +578,7 @@ if experiment == "光频梳":
     import numpy as np
     st.subheader("Kerr 光频梳模拟")
     with st.spinner("求解 Lugiato-Lefever 方程..."):
-        res_comb = solve_lle(alpha=comb_alpha, beta2=comb_beta2, pump=comb_pump, n_pts=1024, n_steps=4000, dt=0.02)
+        res_comb = _comb_cached(comb_alpha, comb_beta2, comb_pump, 1024)
     spec_comb = res_comb["spectrum"]
     n_peaks = np.sum(spec_comb > spec_comb.max() * 0.01)
     pwr_comb = np.mean(np.abs(res_comb["psi"])**2)
@@ -521,11 +591,11 @@ if experiment == "光频梳":
     axes_comb[0].plot(freq_comb[freq_comb >= 0], spec_comb[freq_comb >= 0], "b-", lw=1)
     axes_comb[0].set_yscale("log")
     axes_comb[0].set_xlabel("Azimuthal Mode Number k"); axes_comb[0].set_ylabel("Intensity (log)")
-    axes_comb[0].set_title("Frequency Comb Spectrum"); axes_comb[0].grid(alpha=0.3, which="both")
+    axes_comb[0].set_title("频率梳频谱"); axes_comb[0].grid(alpha=0.3, which="both")
     axes_comb[0].set_xlim(0, min(200, freq_comb[freq_comb >= 0].max()))
     axes_comb[1].plot(res_comb["theta"], np.abs(res_comb["psi"])**2, "r-", lw=1.5)
     axes_comb[1].set_xlabel("theta (rad)"); axes_comb[1].set_ylabel("|psi|^2")
-    axes_comb[1].set_title("Intracavity Field")
+    axes_comb[1].set_title("腔内场分布")
     axes_comb[1].set_xlim(0, 2*np.pi); axes_comb[1].grid(alpha=0.3)
     plt.tight_layout()
     st.pyplot(fig_comb)
@@ -533,6 +603,8 @@ if experiment == "光频梳":
     st.info("Kerr频率梳：强泵浦光在微环中通过四波混频产生等间距频率梳齿。反常色散(beta2<0)和足够高的泵浦是梳子形成的必要条件。")
     st.info("从随机噪声自启动，经过多次往返后通过增益饱和与可饱和吸收体形成稳定锁模脉冲。调节g0/q0可观察脉冲建立过程的变化。")
 # ── 导出 ──────────────────────────────────────────
+# PNG 和 GIF 导出功能。需要赞助验证通过。
+# GIF 仅 L1 实验可用（L2/L3 没有传播动画）───────────────
 st.markdown(r"---")
 st.subheader("导出" + ("图片 / GIF" if experiment not in NON_L1_EXPS else "图片"))
 if st.session_state.sponsor_valid:
@@ -552,7 +624,7 @@ if st.session_state.sponsor_valid:
                 def update(frame):
                     ax_anim.clear()
                     ax_anim.plot(t, pulse[frame]/pulse[frame].max(), "r-", lw=2)
-                    ax_anim.set_xlabel("Time (ps)"); ax_anim.set_ylabel("Intensity")
+                    ax_anim.set_xlabel("Time (ps)"); ax_anim.set_ylabel("强度")
                     ax_anim.set_title(f"z={z[frame]:.1f} km")
                     ax_anim.set_ylim(0, 1.1); ax_anim.grid(alpha=0.3)
                 ani = animation.FuncAnimation(fig_anim, update, frames=n_frames, interval=80)
@@ -571,70 +643,93 @@ else:
     st.markdown(r"[去爱发电赞助](https://ifdian.net/a/S_Physics)")
 
 # ── 物理说明 ────────────────────────────────────
+# 各实验的物理原理、核心公式和相关解释
+# 数据驱动渲染：从 PHYSICS_DATA 字典读取内容─────────────
 st.subheader("物理说明")
-if experiment == "高斯脉冲 GVD 展宽":
-    st.markdown(r"高斯脉冲在色散光纤中传播，不同频率分量以不同速度传播导致脉冲展宽。")
-    st.latex(r"\frac{\partial A}{\partial z} = -i\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2}")
-    st.markdown(r"$L_D=T_0^2/|\beta_2|$ 为色散长度。$T(z)=T_0\sqrt{1+(z/L_D)^2}$。")
-elif experiment == "啁啾脉冲压缩":
-    st.markdown(r"带正啁啾的脉冲在反常色散光纤中先压缩后展宽。")
-    st.latex(r"z_{\min} = \frac{|C|}{1+C^2}L_D, \quad T_{\min} = \frac{T_0}{\sqrt{1+C^2}}")
-    st.markdown(r"压缩条件：$C\beta_2<0$（正啁啾 + 反常色散）。")
-elif experiment == "超高斯脉冲展宽":
-    st.markdown(r"$A(0,T)=\exp(-\frac12|T/T_0|^{2m})$ $m=1$为标准高斯，$m=3$为近矩形脉冲。")
-    st.markdown(r"超高斯脉冲边缘陡峭→频域分量更丰富，GVD 导致边缘产生振荡结构。")
-elif experiment == "三阶色散 (TOD)":
-    st.markdown(r"三阶色散 ($\beta_3$) 导致脉冲非对称畸变，$\phi(\omega)=\beta_2\omega^2/2+\beta_3\omega^3/6$。")
-    st.markdown(r"$\beta_3>0$在前沿产生振荡，$\beta_3<0$在后沿，超短脉冲中不可忽略。")
-elif experiment == "基态孤子 (N=1)":
-    st.markdown(r"反常色散 + SPM 精确平衡，形成稳定孤子。")
-    st.latex(r"i\frac{\partial A}{\partial z} = -\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2} + \gamma |A|^2 A")
-    st.markdown(r"$N^2=\gamma P_0 T_0^2/|\beta_2|=1$ → $P_0=|\beta_2|/(\gamma T_0^2)$。")
-elif experiment == "高阶孤子 (N>1)":
-    st.markdown(r"N>1 时孤子呈现周期性呼吸行为：压缩→分裂→恢复，周期 $z_0=\pi L_D/2$。")
-    st.markdown(r"N 越大呼吸越剧烈。参数滑块可调 N=2~4。")
-elif experiment == "空间光束衍射":
-    st.markdown(r"高斯光束在自由空间中传播时因衍射而展宽。光束半径随传播距离变化关系：")
-    st.latex(r"w(z)=w_0\sqrt{1+(z/z_R)^2},\quad z_R=\pi w_0^2/\lambda")
-    st.markdown(r"发散角 $\theta = \lambda/(\pi w_0)$，束腰越小衍射越显著。角谱法通过频域相位因子 $\exp(-i(k_x^2+k_y^2)z/(2k))$ 模拟衍射。")
-elif experiment == "HG/LG 模式":
-    st.markdown(r"厄米-高斯(HG)和拉盖尔-高斯(LG)模式是空间光场的完备正交基。")
-    st.latex(r"\Psi_{mn}^{\mathrm{HG}}(x,y)=C_{mn}H_m(\sqrt{2}x/w_0)H_n(\sqrt{2}y/w_0)e^{-(x^2+y^2)/w_0^2}")
-    st.latex(r"\Psi_{pl}^{\mathrm{LG}}(r,\theta)=C_{pl}(\sqrt{2}r/w_0)^{|l|}L_p^{|l|}(2r^2/w_0^2)e^{-r^2/w_0^2}e^{-il\theta}")
-    st.markdown(r"HG$_{mn}$有 $m\times n$ 个节线；LG$_{pl}$ 含涡旋相位 $e^{-il\theta}$，$l$ 为拓扑荷数决定OAM。")
-elif experiment == "大气湍流":
-    st.markdown(r"Kolmogorov湍流理论：功率谱 $\Phi_n(\kappa)=0.033 C_n^2 \kappa^{-11/3}$。")
-    st.latex(r"\Phi_n(\kappa)=0.033 C_n^2 \kappa^{-11/3},\qquad r_0=[0.423 k^2 C_n^2 L]^{-3/5}")
-    st.markdown(r"Fried参数 $r_0$ 表征湍流强度。相位屏法模拟大气湍流产生光强闪烁(Scintillation)和波前畸变。")
-elif experiment == "偏振演化":
-    st.markdown(r"偏振态用 Jones 向量 $\mathbf{J}=[E_x e^{i\phi_x}, E_y e^{i\phi_y}]^T$ 表征。")
-    st.latex(r"S_0=|E_x|^2+|E_y|^2,\ S_1=|E_x|^2-|E_y|^2,\ S_2=2\mathrm{Re}(E_x^*E_y),\ S_3=2\mathrm{Im}(E_x^*E_y)")
-    st.markdown(r"H线偏 $\to (1,0,0)$；R圆偏 $\to (0,0,1)$。双折射介质中两偏振分量经历不同相位延迟导致偏振态演化。")
-elif experiment == "XPM (交叉相位调制)":
-    st.markdown(r"交叉相位调制(XPM)：两脉冲共传时一者的非线性相位受另一者强度影响。")
-    st.latex(r"\frac{\partial A_1}{\partial z}=-\frac{\beta_2}{2}\frac{\partial^2 A_1}{\partial T^2}+i\gamma(|A_1|^2+2|A_2|^2)A_1")
-    st.latex(r"\frac{\partial A_2}{\partial z}=-\frac{\beta_2}{2}\frac{\partial^2 A_2}{\partial T^2}+i\gamma(|A_2|^2+2|A_1|^2)A_2")
-    st.markdown(r"XPM系数(2)是SPM(1)的两倍。强泵浦光通过XPM调制弱探针光相位，导致探针频谱非对称展宽。")
+PHYSICS_DATA = {
+    "高斯脉冲 GVD 展宽": [
+        ("m", r"高斯脉冲在色散光纤中传播，不同频率分量以不同速度传播导致脉冲展宽。"),
+        ("l", r"\frac{\partial A}{\partial z} = -i\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2}"),
+        ("m", r"$L_D=T_0^2/|\beta_2|$ 为色散长度。$T(z)=T_0\sqrt{1+(z/L_D)^2}$。"),
+    ],
+    "啁啾脉冲压缩": [
+        ("m", r"带正啁啾的脉冲在反常色散光纤中先压缩后展宽。"),
+        ("l", r"z_{\min} = \frac{|C|}{1+C^2}L_D, \quad T_{\min} = \frac{T_0}{\sqrt{1+C^2}}"),
+        ("m", r"压缩条件：$C\beta_2<0$（正啁啾 + 反常色散）。"),
+    ],
+    "超高斯脉冲展宽": [
+        ("m", r"$A(0,T)=\exp(-\frac12|T/T_0|^{2m})$ $m=1$为标准高斯，$m=3$为近矩形脉冲。"),
+        ("m", r"超高斯脉冲边缘陡峭→频域分量更丰富，GVD 导致边缘产生振荡结构。"),
+    ],
+    "三阶色散 (TOD)": [
+        ("m", r"三阶色散 ($\beta_3$) 导致脉冲非对称畸变，$\phi(\omega)=\beta_2\omega^2/2+\beta_3\omega^3/6$。"),
+        ("m", r"$\beta_3>0$在前沿产生振荡，$\beta_3<0$在后沿，超短脉冲中不可忽略。"),
+    ],
+    "基态孤子 (N=1)": [
+        ("m", r"反常色散 + SPM 精确平衡，形成稳定孤子。"),
+        ("l", r"i\frac{\partial A}{\partial z} = -\frac{\beta_2}{2}\frac{\partial^2 A}{\partial T^2} + \gamma |A|^2 A"),
+        ("m", r"$N^2=\gamma P_0 T_0^2/|\beta_2|=1$ → $P_0=|\beta_2|/(\gamma T_0^2)$。"),
+    ],
+    "高阶孤子 (N>1)": [
+        ("m", r"N>1 时孤子呈现周期性呼吸行为：压缩→分裂→恢复，周期 $z_0=\pi L_D/2$。"),
+        ("m", r"N 越大呼吸越剧烈。参数滑块可调 N=2~4。"),
+    ],
+    "空间光束衍射": [
+        ("m", r"高斯光束在自由空间中传播时因衍射而展宽。光束半径随传播距离变化关系："),
+        ("l", r"w(z)=w_0\sqrt{1+(z/z_R)^2},\quad z_R=\pi w_0^2/\lambda"),
+        ("m", r"发散角 $\theta = \lambda/(\pi w_0)$，束腰越小衍射越显著。角谱法通过频域相位因子 $\exp(-i(k_x^2+k_y^2)z/(2k))$ 模拟衍射。"),
+    ],
+    "HG/LG 模式": [
+        ("m", r"厄米-高斯(HG)和拉盖尔-高斯(LG)模式是空间光场的完备正交基。"),
+        ("l", r"\Psi_{mn}^{\mathrm{HG}}(x,y)=C_{mn}H_m(\sqrt{2}x/w_0)H_n(\sqrt{2}y/w_0)e^{-(x^2+y^2)/w_0^2}"),
+        ("l", r"\Psi_{pl}^{\mathrm{LG}}(r,\theta)=C_{pl}(\sqrt{2}r/w_0)^{|l|}L_p^{|l|}(2r^2/w_0^2)e^{-r^2/w_0^2}e^{-il\theta}"),
+        ("m", r"HG$_{mn}$有 $m\times n$ 个节线；LG$_{pl}$ 含涡旋相位 $e^{-il\theta}$，$l$ 为拓扑荷数决定OAM。"),
+    ],
+    "大气湍流": [
+        ("m", r"Kolmogorov湍流理论：功率谱 $\Phi_n(\kappa)=0.033 C_n^2 \kappa^{-11/3}$。"),
+        ("l", r"\Phi_n(\kappa)=0.033 C_n^2 \kappa^{-11/3},\qquad r_0=[0.423 k^2 C_n^2 L]^{-3/5}"),
+        ("m", r"Fried参数 $r_0$ 表征湍流强度。相位屏法模拟大气湍流产生光强闪烁(Scintillation)和波前畸变。"),
+    ],
+    "偏振演化": [
+        ("m", r"偏振态用 Jones 向量 $\mathbf{J}=[E_x e^{i\phi_x}, E_y e^{i\phi_y}]^T$ 表征。"),
+        ("l", r"S_0=|E_x|^2+|E_y|^2,\ S_1=|E_x|^2-|E_y|^2,\ S_2=2\mathrm{Re}(E_x^*E_y),\ S_3=2\mathrm{Im}(E_x^*E_y)"),
+        ("m", r"H线偏 $\to (1,0,0)$；R圆偏 $\to (0,0,1)$。双折射介质中两偏振分量经历不同相位延迟导致偏振态演化。"),
+    ],
+    "XPM (交叉相位调制)": [
+        ("m", r"交叉相位调制(XPM)：两脉冲共传时一者的非线性相位受另一者强度影响。"),
+        ("l", r"\frac{\partial A_1}{\partial z}=-\frac{\beta_2}{2}\frac{\partial^2 A_1}{\partial T^2}+i\gamma(|A_1|^2+2|A_2|^2)A_1"),
+        ("l", r"\frac{\partial A_2}{\partial z}=-\frac{\beta_2}{2}\frac{\partial^2 A_2}{\partial T^2}+i\gamma(|A_2|^2+2|A_1|^2)A_2"),
+        ("m", r"XPM系数(2)是SPM(1)的两倍。强泵浦光通过XPM调制弱探针光相位，导致探针频谱非对称展宽。"),
+    ],
+    "定向耦合器": [
+        ("m", r"定向耦合器：两根平行波导通过倏逝场耦合。功率在两波导间周期性地来回转移。"),
+        ("l", r"P_1(z)=\cos^2(\kappa z),\quad P_2(z)=\sin^2(\kappa z)"),
+        ("l", r"L_c = \frac{\pi}{2\kappa},\quad \kappa \approx \frac{2h^2\gamma\,e^{-\gamma g}}{\beta w_\text{eff}(h^2+\gamma^2)}"),
+        ("m", r"κ 为耦合系数，g 为波导间距，γ 为倏逝衰减常数。间距越大耦合越弱（指数衰减）。"),
+    ],
+    "微环谐振腔": [
+        ("m", r"微环谐振腔：直波导通过倏逝场耦合到环形波导。当满足谐振条件时，光在环内共振增强，透射谱出现凹陷。"),
+        ("l", r"T(\lambda)=\frac{a^2+t^2-2at\cos\phi}{1+a^2t^2-2at\cos\phi},\quad \phi=\frac{2\pi n_\text{eff}L}{\lambda}"),
+        ("m", r"$t=\sqrt{1-\kappa^2}$ 为自耦合系数，$a=e^{-\alpha L/2}$ 为往返振幅传输。临界耦合条件 $t=a$ 时消光比最大。"),
+        ("l", r"\text{FSR} \approx \frac{\lambda^2}{n_\text{eff}L},\quad Q = \frac{\lambda}{\Delta\lambda_\text{FWHM}}"),
+    ],
+    "锁模激光器": [
+        ("m", r"锁模激光器：腔内增益和可饱和吸收体的联合作用使脉冲自启动并稳定化。"),
+        ("l", r"T_R \frac{\partial A}{\partial T} = \left(g - l + \frac{1}{\Omega_g^2}\frac{\partial^2}{\partial t^2} + (\gamma - i\beta_2/2)\frac{\partial^2}{\partial t^2}\right)A + (\gamma_r - i\delta)|A|^2 A"),
+    ],
+    "光频梳": [
+        ("l", r"\frac{\partial\psi}{\partial\tau} = -(1+i\alpha)\psi + i|\psi|^2\psi - i\frac{\beta_2}{2}\frac{\partial^2\psi}{\partial\theta^2} + f"),
+        ("m", r"$\alpha$ 为失谐，$\beta_2$ 为色散，$f$ 为泵浦振幅。稳定梳齿在反常色散区形成。"),
+    ],
+}
 
-elif experiment == "定向耦合器":
-    st.markdown(r"定向耦合器：两根平行波导通过倏逝场耦合。功率在两波导间周期性地来回转移。")
-    st.latex(r"P_1(z)=\cos^2(\kappa z),\quad P_2(z)=\sin^2(\kappa z)")
-    st.latex(r"L_c = \frac{\pi}{2\kappa},\quad \kappa \approx \frac{2h^2\gamma\,e^{-\gamma g}}{\beta w_\text{eff}(h^2+\gamma^2)}")
-    st.markdown(r"κ 为耦合系数，g 为波导间距，γ 为倏逝衰减常数。间距越大耦合越弱（指数衰减）。")
+# 渲染物理说明
+if experiment in PHYSICS_DATA:
+    for tp, txt in PHYSICS_DATA[experiment]:
+        if tp == "m":
+            st.markdown(txt)
+        elif tp == "l":
+            st.latex(txt)
 
-
-elif experiment == "微环谐振腔":
-    st.markdown(r"微环谐振腔：直波导通过倏逝场耦合到环形波导。当满足谐振条件时，光在环内共振增强，透射谱出现凹陷。")
-    st.latex(r"T(\lambda)=\frac{a^2+t^2-2at\cos\phi}{1+a^2t^2-2at\cos\phi},\quad \phi=\frac{2\pi n_\text{eff}L}{\lambda}")
-    st.markdown(r"$t=\sqrt{1-\kappa^2}$ 为自耦合系数，$a=e^{-\alpha L/2}$ 为往返振幅传输。临界耦合条件 $t=a$ 时消光比最大。")
-    st.latex(r"\text{FSR} \approx \frac{\lambda^2}{n_\text{eff}L},\quad Q = \frac{\lambda}{\Delta\lambda_\text{FWHM}}")
-elif experiment == "锁模激光器":
-    st.markdown(r"锁模激光器：腔内增益和可饱和吸收体的联合作用使脉冲自启动并稳定化。")
-    st.latex(r"T_R \frac{\partial A}{\partial T} = \left(g - l + \frac{1}{\Omega_g^2}\frac{\partial^2}{\partial t^2} + (\gamma - i\beta_2/2)\frac{\partial^2}{\partial t^2}\right)A + (\gamma_r - i\delta)|A|^2 A")
-
-elif experiment == "光频梳":
-    st.markdown("Kerr频率梳：连续激光泵浦微环谐振腔，当泵浦功率超过阈值时，通过级联四波混频产生等间距的频率梳齿。")
-    st.latex(r"\frac{\partial\psi}{\partial\tau} = -(1+i\alpha)\psi + i|\psi|^2\psi - i\frac{\beta_2}{2}\frac{\partial^2\psi}{\partial\theta^2} + f")
-    st.markdown(r"$\alpha$ 为失谐，$\beta_2$ 为色散，$f$ 为泵浦振幅。稳定梳齿在反常色散区形成。")
 st.markdown(r"---")
 st.caption("光学波包全实验模拟器 | L1 基础层 | 引擎：对称分步傅里叶法 (SSFM)")

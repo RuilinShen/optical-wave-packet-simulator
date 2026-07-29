@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: optical-validator
+    env: python
+    buildCommand: ""
+    startCommand: python app.py
+    envVars:
+      - key: ADMIN_SECRET
+        value: your_secret_here

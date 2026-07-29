@@ -6,7 +6,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 # 验证服务器地址（部署后替换）
-VALIDATION_SERVER = "http://localhost:5000"
+VALIDATION_SERVER = os.environ.get("VALIDATION_SERVER", "http://localhost:5000")
 CACHE_DIR = Path(__file__).parent.parent.parent / ".license_cache"
 CACHE_FILE = CACHE_DIR / "license.json"
 
@@ -42,7 +42,7 @@ def check_code(code):
         return {"valid": False, "message": "赞助码格式不正确"}
 
     # 服务器验证
-    result = _api("/validate", {"code": code})
+    result = _api("/validate", {"code": code, "project": "optical"})
     if result:
         if result.get("valid"):
             _save_cache({"code": code, "tier": result.get("tier", "full"),
@@ -82,7 +82,7 @@ def get_license_state():
         return {"tier": "trial", "valid": False, "expires_at": None}
 
     # 定期重新验证
-    result = _api("/check", {"code": code})
+    result = _api("/check", {"code": code, "project": "optical"})
     if result:
         if result.get("valid"):
             return {"tier": result.get("tier", "full"), "valid": True,
