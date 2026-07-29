@@ -2,7 +2,7 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 
-DB = os.path.join(os.path.dirname(__file__), "licenses.db")
+DB = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "licenses.db"))
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "local_dev_only")
 
 def init_db():
