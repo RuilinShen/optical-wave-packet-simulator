@@ -339,7 +339,7 @@ else:
     pulse = np.zeros((2, 256))
     fig = None
 
-if experiment in LICENSED_EXPS and license_state.get("tier") == "trial":
+if experiment in LICENSED_EXPS and not st.session_state.sponsor_valid:
     st.info(chr(128274) + " 该实验需要赞助解锁。前往左侧边栏输入赞助码。")
     st.markdown("[去爱发电赞助](https://ifdian.net/a/S_Physics)")
     st.stop()
