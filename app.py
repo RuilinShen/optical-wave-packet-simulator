@@ -25,7 +25,12 @@ sys.path.insert(0, ".")
 import streamlit as st
 import numpy as np
 import matplotlib
+matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
+# Also re-set after plt import
+plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
+plt.rcParams["axes.unicode_minus"] = False
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 import tempfile, os
