@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CODES_FILE1 = os.path.join(BASE, "..", "codes.json")
-CODES_FILE2 = os.path.join(BASE, "..", "..", "CHAOS_DIR", "codes.json")
+CODES_FILE2 = os.path.join(BASE, "..", "..", "混沌摆模拟器逐步教学/chaos-pendulum", "codes.json")
 SECRET_FILE = os.path.join(BASE, "..", ".codes_secret.json")
 
 def load_codes():
@@ -62,25 +62,15 @@ def list_codes():
     if not codes:
         print("No codes.")
         return
-    from datetime import datetime
-    print(" # ST PROJECT   OWNER     REMAIN     EXPIRES      CODE")
-    print("-" * 65)
+    print(" # ST PROJECT   OWNER     EXPIRES      CODE")
+    print("-" * 55)
     for i, c in enumerate(codes):
         st = "V" if c.get("active") else "X"
         p = c.get("project", "")
         o = c.get("owner", "")
-        exp = c.get("expires")
-        if exp:
-            try:
-                rem_d = (datetime.fromisoformat(exp) - datetime.now()).days
-                rem = str(rem_d) + "d" if rem_d >= 0 else "expired"
-            except:
-                rem = exp[:10]
-        else:
-            rem = "forever"
-        e = exp or "forever"
+        e = c.get("expires", "forever") or "forever"
         r = sec.get(c.get("hash",""), "")
-        print(f"{i+1:>2} {st:>2} {p:>9} {o:>8} {rem:>7} {e:>11} {r}")
+        print(f"{i+1:>2} {st:>2} {p:>9} {o:>8} {e:>11} {r}")
 
 def extend(n, days):
     codes = load_codes()
@@ -126,11 +116,14 @@ if __name__ == "__main__":
         elif c == "disable":
             toggle(int(sys.argv[2] if len(sys.argv)>2 else input("N: ")), False)
         elif c == "enable":
-            toggle(int(sys.argv[2]) if len(sys.argv)>2 else int(input("N: ")), True)
+            toggle(int(sys.argv[2] if len(sys.argv)>2 else input("N: ")), True)
         elif c == "extend":
+            toggle(int(sys.argv[2] if len(sys.argv)>2 else input("N: ")), True)
             n = int(sys.argv[2]) if len(sys.argv)>2 else int(input("N: "))
             d = int(sys.argv[3]) if len(sys.argv)>3 else int(input("Days: "))
             extend(n, d)
+        elif c == "delete":
+            delete_codes(int(sys.argv[2] if len(sys.argv)>2 else input("N: ")))
         else:
             print("Unknown:", c); usage()
     except Exception as e:

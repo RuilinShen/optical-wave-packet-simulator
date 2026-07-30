@@ -7,5 +7,23 @@
     "created": "2026-07-30",
     "expires": "2026-07-01",
     "active": true
+  },
+  {
+    "hash": "5ac4f226213a671fcd19209c241c3e65960a6c06506914f8d18cbcf2a03dcb6f",
+    "project": "optical",
+    "owner": "shen",
+    "tier": "full",
+    "created": "2026-07-30",
+    "expires": null,
+    "active": true
+  },
+  {
+    "hash": "be4b9872310222beac412d4e508d4cc9c8e42d2ac86a60e459d51586d99cc53a",
+    "project": "chaos",
+    "owner": "shen",
+    "tier": "full",
+    "created": "2026-07-30",
+    "expires": null,
+    "active": true
   }
 ]
