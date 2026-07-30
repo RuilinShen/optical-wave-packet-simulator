@@ -34,6 +34,13 @@ plt.rcParams["axes.unicode_minus"] = False
 # Rebuild font cache to find newly installed fonts
 import matplotlib.font_manager
 matplotlib.font_manager._load_fontmanager(try_read_cache=False)
+# Directly register common Chinese font files
+import os as _os
+for _fp in ["/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"]:
+    if _os.path.exists(_fp):
+        matplotlib.font_manager.fontManager.addfont(_fp)
+        break
 import tempfile, os
 from io import BytesIO
 import matplotlib.animation as animation
