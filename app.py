@@ -31,8 +31,9 @@ import matplotlib.pyplot as plt
 # Also re-set after plt import
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC"]
 plt.rcParams["axes.unicode_minus"] = False
-matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
-matplotlib.rcParams["axes.unicode_minus"] = False
+# Rebuild font cache to find newly installed fonts
+import matplotlib.font_manager
+matplotlib.font_manager._load_fontmanager(try_read_cache=False)
 import tempfile, os
 from io import BytesIO
 import matplotlib.animation as animation
