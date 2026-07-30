@@ -1,29 +1,11 @@
 [
   {
-    "hash": "d3ff435228e0b9549189e54be898439dc40fe9447febf2669af9651611f570d4",
-    "project": "test",
-    "owner": "演示",
-    "tier": "full",
-    "created": "2026-07-30",
-    "expires": "2026-08-29",
-    "active": true
-  },
-  {
-    "hash": "1908ee4ce490e2203fe24e39af69c02c68399f22372b47b52791ec7149a82336",
+    "hash": "2b830150bad5a491ce4aa0ba77ea9feaaad687cdced0627b6e5a5030e5658025",
     "project": "chaos",
     "owner": "all",
     "tier": "full",
     "created": "2026-07-30",
     "expires": "2026-08-01",
-    "active": true
-  },
-  {
-    "hash": "9dd56a3dfa5803dd4ee7cae302de0f05a5a0333353be69ca5da82e3a9241ef8e",
-    "project": "optical",
-    "owner": "shen",
-    "tier": "full",
-    "created": "2026-07-30",
-    "expires": null,
     "active": true
   }
 ]

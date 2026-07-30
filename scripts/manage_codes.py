@@ -68,6 +68,27 @@ def list_codes():
         raw = secrets.get(c.get("hash",""), "")
         print(f"{i+1:>3} {st:>4} {p:>10} {o:>8} {e:>12} {raw:>20}")
 
+def extend(index, days):
+    codes = load_codes()
+    if 1 <= index <= len(codes):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        codes[index-1]["expires"] = (now + timedelta(days=days)).isoformat()[:10]
+        codes[index-1]["active"] = True
+        save_codes(codes)
+        print(f"\u5df2\u5ef6\u957f\u7b2c {index} \u4e2a\u7801 {days} \u5929\uff0c\u65b0\u5230\u671f: {codes[index-1]['expires']}")
+    else:
+        print("\u7f16\u53f7\u65e0\u6548")
+
+def delete_codes(index):
+    codes = load_codes()
+    if 1 <= index <= len(codes):
+        removed = codes.pop(index-1)
+        save_codes(codes)
+        print(f"\u5df2\u5220\u9664\u7b2c {index} \u4e2a\u7801 ({removed.get('owner', '')})")
+    else:
+        print("\u7f16\u53f7\u65e0\u6548")
+
 def toggle(index, active):
     codes = load_codes()
     if 1 <= index <= len(codes):
