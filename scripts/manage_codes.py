@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 # 光学模拟器目录
 BASE = os.path.dirname(os.path.abspath(__file__))
 CODES_FILE1 = os.path.join(BASE, "..", "codes.json")
-CODES_FILE2 = os.path.join(BASE, "..", "..", "混池摆模拟器教学\chaos-pendulum", "codes.json")
+CODES_FILE2 = os.path.join(BASE, "..", "..", "混沌摆模拟器逐步教学/chaos-pendulum", "codes.json")
+SECRET_FILE = os.path.join(BASE, "..", ".codes_secret.json")
 
 def load_codes():
     try:
@@ -15,19 +16,26 @@ def load_codes():
     except:
         return []
 
+def load_secrets():
+    try:
+        with open(SECRET_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
 def save_codes(codes):
     with open(CODES_FILE1, "w", encoding="utf-8") as f:
         json.dump(codes, f, indent=2, ensure_ascii=False)
-    # 同步写入混池摆
+    # 同步写入混沌摆
     try:
         d2 = os.path.dirname(CODES_FILE2)
         if d2:
             os.makedirs(d2, exist_ok=True)
         with open(CODES_FILE2, "w", encoding="utf-8") as f:
             json.dump(codes, f, indent=2, ensure_ascii=False)
-        print("  (已同步写入混池摆目录)")
+        print("  (已同步写入混沌摆目录)")
     except:
-        print("  (警告: 无法写入混池摆目录)")
+        print("  (警告: 无法写入混沌摆目录)")
 
 def gen(project, owner, days, tier="full"):
     raw = "SPONSOR-" + uuid.uuid4().hex[:8].upper()
@@ -46,17 +54,19 @@ def gen(project, owner, days, tier="full"):
 
 def list_codes():
     codes = load_codes()
+    secrets = load_secrets()
     if not codes:
         print("\u6682\u65e0\u8d5e\u52a9\u7801")
         return
-    print(f"{'#':>3} {'\u72b6\u6001':>4} {'\u9879\u76ee':>10} {'\u5f52\u5c5e':>8} {'\u5230\u671f':>12}")
-    print("-" * 42)
+    print(f"{'#':>3} {'V/X':>4} {'\u9879\u76ee':>10} {'\u5f52\u5c5e':>8} {'\u5230\u671f':>12} {'\u8d5e\u52a9\u7801':>20}")
+    print("-" * 65)
     for i, c in enumerate(codes):
-        st = "\u2714" if c.get("active") else "\u2718"
+        st = "V" if c.get("active") else "X"
         p = c.get("project", "")
         o = c.get("owner", "")
         e = c.get("expires", "\u6c38\u4e45") or "\u6c38\u4e45"
-        print(f"{i+1:>3} {st:>4} {p:>10} {o:>8} {e:>12}")
+        raw = secrets.get(c.get("hash",""), "")
+        print(f"{i+1:>3} {st:>4} {p:>10} {o:>8} {e:>12} {raw:>20}")
 
 def toggle(index, active):
     codes = load_codes()
