@@ -1,6 +1,5 @@
 # 验证系统
-server/licenses.db
-server/__pycache__/
+server/
 sponsor_codes.json
 
 # Python 中间
@@ -10,9 +9,9 @@ __pycache__/
 .venv/
 .license_cache
 
-# 验证服务器配置（部署时使用）
+# 配置
 .env
 *.local.py
 
-# 废弃文件
+# 废弃
 _archive/
