@@ -25,5 +25,14 @@
     "created": "2026-07-30",
     "expires": null,
     "active": true
+  },
+  {
+    "hash": "d252e29d52152e1a7127e39317c8e187168a774ebd30c36c61ef6ad188426fc1",
+    "project": "optical",
+    "owner": "us",
+    "tier": "full",
+    "created": "2026-08-05",
+    "expires": "2026-09-04",
+    "active": true
   }
 ]
